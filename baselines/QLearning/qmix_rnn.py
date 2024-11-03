@@ -544,6 +544,7 @@ def make_train(config, env):
                 "loss": loss.mean(),
                 "qvals": qvals.mean(),
             }
+            print(metrics)
             metrics.update(jax.tree_map(lambda x: x.mean(), infos))
 
             # update the test metrics
@@ -631,7 +632,7 @@ def make_train(config, env):
                         jnp.nan,
                     )
                 ),
-                infos,
+                {key: infos[key] for key in ['returned_episode', 'returned_episode_lengths', 'returned_episode_returns']},
             )
             return metrics
 
@@ -645,7 +646,7 @@ def make_train(config, env):
         runner_state, metrics = jax.lax.scan(
             _update_step, runner_state, None, config["NUM_UPDATES"]
         )
-
+        
         return {"runner_state": runner_state, "metrics": metrics}
 
     return train

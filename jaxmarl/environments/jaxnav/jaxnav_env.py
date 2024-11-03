@@ -98,7 +98,7 @@ class JaxNav(MultiAgentEnv):
         
     def __init__(self,
                  num_agents: int, # Number of agents
-                 act_type="Continuous", # Action type, either Continuous or Discrete
+                 act_type="Discrete", # Action type, either Continuous or Discrete
                  normalise_obs=True,
                  rad=0.3,  # Agent radius, TODO remove dependency on this
                  evaporating=False,  # Whether agents evaporate (dissapeare) when they reach the goal

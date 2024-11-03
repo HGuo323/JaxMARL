@@ -240,6 +240,7 @@ class SMAX(MultiAgentEnv):
                 )
             )
         elif self.action_type == "continuous":
+            
             return Box(low=0.0, high=1.0, shape=(len(self.continuous_action_dims),))
         else:
             raise ValueError("")
