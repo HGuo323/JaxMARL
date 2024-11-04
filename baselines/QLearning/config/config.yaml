@@ -6,9 +6,9 @@
 
 # wandb params
 "ENTITY": ""
-"PROJECT": ""
-"WANDB_MODE": "disabled"
-"WANDB_LOG_ALL_SEEDS": False # will log separately the vmapped seeds
+"PROJECT": "pqn_vdn"
+"WANDB_MODE": "online"
+"WANDB_LOG_ALL_SEEDS": True # will log separately the vmapped seeds
 
 # where to save the params (if None, will not save)
 "SAVE_PATH": "models"
