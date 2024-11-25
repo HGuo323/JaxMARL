@@ -1,12 +1,12 @@
 # experiment params
-"NUM_SEEDS": 1 # number of vmapped seeds
+"NUM_SEEDS": 5 # number of vmapped seeds
 "SEED": 0
 
 "HYP_TUNE": False # perform hyp tune
 
 # wandb params
-"ENTITY": ""
-"PROJECT": "qmix"
+"ENTITY": "star-lab-gt"
+"PROJECT": "DL Project"
 "WANDB_MODE": "online"
 "WANDB_LOG_ALL_SEEDS": True # will log separately the vmapped seeds
 

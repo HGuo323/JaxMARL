@@ -181,7 +181,7 @@ def make_train(config, env):
     eps_scheduler = optax.linear_schedule(
         init_value=config["EPS_START"],
         end_value=config["EPS_FINISH"],
-        transition_steps=config["EPS_DECAY"] * config["NUM_UPDATES"],
+        transition_steps=config["EPSILON_ANNEAL_TIME"], # config["EPS_DECAY"] * config["NUM_UPDATES"],
     )
 
     def get_greedy_actions(q_vals, valid_actions):
@@ -268,6 +268,7 @@ def make_train(config, env):
         network = RNNQNetwork(
             action_dim=wrapped_env.max_action_space,
             hidden_dim=config["HIDDEN_SIZE"],
+            init_scale=config["AGENT_INIT_SCALE"],
         )
 
         mixer = MixingNetwork(
@@ -309,7 +310,8 @@ def make_train(config, env):
 
             tx = optax.chain(
                 optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.radam(learning_rate=lr),
+                optax.adamw(learning_rate=lr, eps=config['EPS_ADAM'], weight_decay=config['WEIGHT_DECAY_ADAM']),
+                # optax.adam(learning_rate=lr, eps=config['EPS_ADAM']),
             )
 
             train_state = CustomTrainState.create(
@@ -475,10 +477,11 @@ def make_train(config, env):
 
                     qmix_next = mixer.apply(train_state.target_network_params['mixer'], q_next, minibatch.obs["__all__"])
                     qmix_target = (
-                        minibatch.rewards["__all__"][:-1]
+                        minibatch.rewards["__all__"][:-1]*config['TD_LAMBDA']
                         + (
                             1 - minibatch.dones["__all__"][:-1]
                         )  # use next done because last done was saved for rnn re-init
+                        * config['TD_LAMBDA']
                         * config["GAMMA"]
                         * qmix_next[1:]  # sum over agents
                     )
