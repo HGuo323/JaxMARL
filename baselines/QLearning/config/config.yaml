@@ -12,3 +12,6 @@
 
 # where to save the params (if None, will not save)
 "SAVE_PATH": "models"
+"LOAD_PATH": "models/one-agent-one-landmark" # if None, will not load
+# "LOAD_PATH": null
+

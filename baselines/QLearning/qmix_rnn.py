@@ -25,6 +25,8 @@ from jaxmarl.wrappers.baselines import (
     MPELogWrapper,
     LogWrapper,
     CTRolloutManager,
+    save_params,
+    load_params,
 )
 
 
@@ -85,27 +87,94 @@ class RNNQNetwork(nn.Module):
 
         return hidden, q_vals
 
-
-class HyperNetwork(nn.Module):
-    """HyperNetwork for generating weights of QMix' mixing network."""
-
+class HyperRNNQNetwork(nn.Module):
+    # homogenous agent for parameters sharing, assumes all agents have same obs and action dim
+    action_dim: int
     hidden_dim: int
-    output_dim: int
-    init_scale: float
+    hypernet_kwargs: dict
+    init_scale: float = 1.0
+
+    def hyper_forward(self, in_dim, out_dim, target_in, hyper_in, time_steps, batch_size):
+        """
+        Compute y = xW + b where W/b are created by a hypernetwork.
+
+        in_dim : dimension of target input x
+        out_dim : dimension of target output y
+        target_in : target input
+        hyper_in : input to hypernet
+
+        time_steps/batch_size : parallel dims
+        """
+        num_weights = (in_dim * out_dim)
+        weight_hypernet = HyperNetwork(hidden_dim=self.hypernet_kwargs["HIDDEN_DIM"], output_dim=num_weights, init_scale=self.hypernet_kwargs["INIT_SCALE"], num_layers=self.hypernet_kwargs["NUM_LAYERS"], use_layer_norm=self.hypernet_kwargs["USE_LAYER_NORM"])
+        weights = weight_hypernet(hyper_in).reshape(time_steps, batch_size, in_dim, out_dim)
+
+        num_biases = out_dim
+        bias_hypernet = HyperNetwork(hidden_dim=self.hypernet_kwargs["HIDDEN_DIM"], output_dim=num_biases, init_scale=0, num_layers=self.hypernet_kwargs["NUM_LAYERS"], use_layer_norm=self.hypernet_kwargs["USE_LAYER_NORM"])
+        biases = bias_hypernet(hyper_in).reshape(time_steps, batch_size, 1, out_dim)
+
+        # compute y = xW + b
+        # NOTE: slicing here expands embedding to be (1, in_dim) @ (in_dim, out_dim)
+        # with leading dims for time_steps, batch_size
+        target_out = jnp.matmul(target_in[:, :, None, :], weights) + biases
+        target_out = target_out.squeeze(axis=2) # remove extra dim needed for computation
+        return target_out
 
     @nn.compact
-    def __call__(self, x):
-        x = nn.Dense(
+    def __call__(self, hidden, obs, dones):
+        # print("obs", obs)
+        # jax.debug.print("marl obs {}", obs)
+        time_steps, batch_size, obs_dim = obs.shape
+        # NOTE: hardcoded to match size of SARL pi
+        # TODO: this is inaccurate as this only gives the first landmark in list of N landmarks, couldn't figure out how to resolve it
+        ego_obs = obs[:, :, :6] 
+
+        embedding = nn.Dense(
             self.hidden_dim,
             kernel_init=orthogonal(self.init_scale),
             bias_init=constant(0.0),
-        )(x)
-        x = nn.relu(x)
-        x = nn.Dense(
-            self.output_dim,
-            kernel_init=orthogonal(self.init_scale),
-            bias_init=constant(0.0),
-        )(x)
+        )(ego_obs)
+        embedding = nn.relu(embedding)
+
+        rnn_in = (embedding, dones)
+        hidden, embedding = ScannedRNN()(hidden, rnn_in)
+
+        # NOTE: hyper decoder layer (replace OG below)
+        q_vals = self.hyper_forward(self.hidden_dim, self.action_dim, embedding, obs, time_steps, batch_size)
+
+        # NOTE: hyper adapter layer (works with OG below)
+        # embedding = self.hyper_forward(self.hidden_dim, self.hidden_dim, embedding, obs, time_steps, batch_size)
+
+        # NOTE: ORIGINAL DECODER LAYER
+        # ----------------------
+        # q_vals = nn.Dense(
+        #     self.action_dim,
+        #     kernel_init=orthogonal(self.init_scale),
+        #     bias_init=constant(0.0),
+        # )(embedding)
+        # ----------------------
+
+        return hidden, q_vals
+
+
+class HyperNetwork(nn.Module):
+    """HyperNetwork for generating weights of QMix' mixing network."""
+    hidden_dim: int
+    output_dim: int
+    init_scale: float
+    # defaults for QMIX mixer network
+    num_layers: int = 2
+    use_layer_norm: bool = False
+
+    @nn.compact
+    def __call__(self, x):
+        for _ in range(self.num_layers-1):
+            x = nn.Dense(self.hidden_dim, kernel_init=orthogonal(self.init_scale), bias_init=constant(0.))(x)
+            if self.use_layer_norm:
+                x = nn.LayerNorm()(x)
+            x = nn.relu(x)
+
+        x = nn.Dense(self.output_dim, kernel_init=orthogonal(self.init_scale), bias_init=constant(0.))(x)
         return x
 
 
@@ -223,14 +292,14 @@ def make_train(config, env):
     def unbatchify(x: jnp.ndarray):
         return {agent: x[i] for i, agent in enumerate(env.agents)}
 
-    def train(rng):
-
+    def train(rng, saved_agent_params):
         # INIT ENV
         original_seed = rng[0]
         rng, _rng = jax.random.split(rng)
-        wrapped_env = CTRolloutManager(env, batch_size=config["NUM_ENVS"])
+        wrapped_env = CTRolloutManager(env, batch_size=config["NUM_ENVS"], preprocess_obs=False) # take away agent IDs
         test_env = CTRolloutManager(
-            env, batch_size=config["TEST_NUM_ENVS"]
+            env, batch_size=config["TEST_NUM_ENVS"],
+            preprocess_obs=False # take away agent IDs
         )  # batched env for testing (has different batch size)
 
         # to initalize some variables is necessary to sample a trajectory to know its strucutre
@@ -265,11 +334,20 @@ def make_train(config, env):
         )  # remove the NUM_ENV dim
 
         # INIT NETWORK AND OPTIMIZER
-        network = RNNQNetwork(
-            action_dim=wrapped_env.max_action_space,
-            hidden_dim=config["HIDDEN_SIZE"],
-            init_scale=config["AGENT_INIT_SCALE"],
-        )
+        if saved_agent_params is None:
+            network = RNNQNetwork(
+                action_dim=wrapped_env.max_action_space,
+                hidden_dim=config["HIDDEN_SIZE"],
+                init_scale=config["AGENT_INIT_SCALE"],
+            )
+        else:
+            # assume if given params, then use hypernet
+            network = HyperRNNQNetwork(
+                action_dim=wrapped_env.max_action_space,
+                hidden_dim=config["HIDDEN_SIZE"],
+                init_scale=config["AGENT_INIT_SCALE"],
+                hypernet_kwargs=config["AGENT_HYPERNET_KWARGS"],
+            )
 
         mixer = MixingNetwork(
             config["MIXER_EMBEDDING_DIM"],
@@ -278,16 +356,42 @@ def make_train(config, env):
         )
 
         def create_agent(rng):
-            init_x = (
-                jnp.zeros(
-                    (1, 1, wrapped_env.obs_size)
-                ),  # (time_step, batch_size, obs_size)
-                jnp.zeros((1, 1)),  # (time_step, batch size)
-            )
-            init_hs = ScannedRNN.initialize_carry(
-                config["HIDDEN_SIZE"], 1
-            )  # (batch_size, hidden_dim)
-            agent_params = network.init(rng, init_hs, *init_x)
+            if saved_agent_params is None:
+                init_x = (
+                    jnp.zeros(
+                        # TODO: why is the obs size 30 here for 5 agents when printing the obs gives 22?????
+                        (1, 1, 22) # wrapped_env.obs_size)
+                    ),  # (time_step, batch_size, obs_size)
+                    jnp.zeros((1, 1)),  # (time_step, batch size)
+                )
+                init_hs = ScannedRNN.initialize_carry(
+                    config["HIDDEN_SIZE"], 1
+                )  # (batch_size, hidden_dim)
+                agent_params = network.init(rng, init_hs, *init_x)
+
+            else:
+                # if there are agent params to load, must modify input size of agent net slightly
+                init_x = (
+                    jnp.zeros(
+                        # TODO: why is the obs size 30 here for 5 agents when printing the obs gives 22?????
+                        (1, 1, 22) # wrapped_env.obs_size)
+                    ),  # (time_step, batch_size, obs_size)
+                    jnp.zeros((1, 1)),  # (time_step, batch size)
+                )
+                init_hs = ScannedRNN.initialize_carry(
+                    config["HIDDEN_SIZE"], 1
+                )  # (batch_size, hidden_dim)
+                agent_params = network.init(rng, init_hs, *init_x)
+
+                # overwrite the non-hypernetwork parts of the agent net
+                for key in saved_agent_params['params'].keys():
+                    if key in agent_params:
+                        print(key)
+                        print('init', agent_params['params'][key])
+                        agent_params['params'][key] = saved_agent_params['params'][key]
+                        print('overwrite', agent_params['params'][key])
+
+                print(agent_params['params'])
 
             # init mixer
             rng, _rng = jax.random.split(rng)
@@ -308,6 +412,7 @@ def make_train(config, env):
 
             lr = lr_scheduler if config.get("LR_LINEAR_DECAY", False) else config["LR"]
 
+            # TODO: consider freezing the "encoder" (ego) here
             tx = optax.chain(
                 optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
                 optax.adamw(learning_rate=lr, eps=config['EPS_ADAM'], weight_decay=config['WEIGHT_DECAY_ADAM']),
@@ -704,13 +809,38 @@ def single_run(config):
     rng = jax.random.PRNGKey(config["SEED"])
 
     rngs = jax.random.split(rng, config["NUM_SEEDS"])
-    train_vjit = jax.jit(jax.vmap(make_train(config, env)))
-    outs = jax.block_until_ready(train_vjit(rngs))
+
+    # load params for agent net trained w/ single agent
+    all_seed_params = [None for _ in rngs]
+    if config.get("LOAD_PATH", None) is not None:
+        # load agent_params 
+        load_dir = os.path.join(config["LOAD_PATH"])
+
+        for i, rng in enumerate(rngs):
+            load_path = os.path.join(
+                load_dir,
+                f'{alg_name}_{env_name}_seed{config["SEED"]}_vmap{i}.safetensors',
+            )
+            params = load_params(load_path)
+            # qmix also has mixer params, ignore those
+            if 'agent' in params.keys():
+                all_seed_params[i] = params['agent']
+
+    # https://stackoverflow.com/questions/79123001/storing-and-jax-vmap-over-pytrees
+    # TLDR: vmap does not work over a list of arrays, reformat as array of arrays w/ list (batch) dimension pushed to the leaves
+    #
+    # meaning if original list is:
+    #  >>> [params: {Dense: 0, Bias: 2}, params: {Dense: 1, Bias: 3}]
+    # then after this jax.tree.map() call it looks like:
+    #  >>> {'params': {'Dense': [0, 1], 'Bias': [2, 3]}}
+    # where each leaf has leading dim N, where N = len of outer list
+    params_array = jax.tree.map(lambda *vals: jnp.array(vals), *all_seed_params)
+
+    train_vjit = jax.jit(jax.vmap(make_train(config, env), in_axes=0))
+    outs = jax.block_until_ready(train_vjit(rngs, params_array))
 
     # save params
     if config.get("SAVE_PATH", None) is not None:
-        from jaxmarl.wrappers.baselines import save_params
-
         model_state = outs["runner_state"][0]
         save_dir = os.path.join(config["SAVE_PATH"], env_name)
         os.makedirs(save_dir, exist_ok=True)

@@ -16,7 +16,8 @@ class SimpleSpreadMPE(SimpleMPE):
         local_ratio=0.5,
         action_type=DISCRETE_ACT,
     ):
-        dim_c = 2  # NOTE follows code rather than docs
+        # dim_c = 2  # NOTE follows code rather than docs
+        dim_c = 0
 
         # Action and observation spaces
         agents = ["agent_{}".format(i) for i in range(num_agents)]
@@ -65,7 +66,7 @@ class SimpleSpreadMPE(SimpleMPE):
                 state.p_pos[self.num_agents :] - state.p_pos[aidx]
             )  # Landmark positions in agent reference frame
 
-            # Zero out unseen agents with other_mask
+            # other agent positions in agent ref frame
             other_pos = state.p_pos[: self.num_agents] - state.p_pos[aidx]
 
             # use jnp.roll to remove ego agent from other_pos and other_vel arrays
@@ -88,9 +89,9 @@ class SimpleSpreadMPE(SimpleMPE):
                 [
                     state.p_vel[aidx].flatten(),  # 2
                     state.p_pos[aidx].flatten(),  # 2
-                    landmark_pos[aidx].flatten(),  # 5, 2
-                    other_pos[aidx].flatten(),  # 5, 2
-                    comm[aidx].flatten(),
+                    landmark_pos[aidx].flatten(),  # N, 2
+                    other_pos[aidx].flatten(),  # N-1, 2
+                    # comm[aidx].flatten(),
                 ]
             )
 
