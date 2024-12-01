@@ -129,15 +129,15 @@ class HyperRNNQNetwork(nn.Module):
         # TODO: this is inaccurate as this only gives the first landmark in list of N landmarks, couldn't figure out how to resolve it
         ego_obs = obs[:, :, :6] 
 
-        embedding = nn.Dense(
+        embedding = jax.lax.stop_gradient(nn.Dense(
             self.hidden_dim,
             kernel_init=orthogonal(self.init_scale),
             bias_init=constant(0.0),
-        )(ego_obs)
-        embedding = nn.relu(embedding)
+        )(ego_obs))
+        embedding = jax.lax.stop_gradient(nn.relu(embedding))
 
         rnn_in = (embedding, dones)
-        hidden, embedding = ScannedRNN()(hidden, rnn_in)
+        hidden, embedding = jax.lax.stop_gradient(ScannedRNN()(hidden, rnn_in))
 
         # NOTE: hyper decoder layer (replace OG below)
         q_vals = self.hyper_forward(self.hidden_dim, self.action_dim, embedding, obs, time_steps, batch_size)
@@ -412,7 +412,6 @@ def make_train(config, env):
 
             lr = lr_scheduler if config.get("LR_LINEAR_DECAY", False) else config["LR"]
 
-            # TODO: consider freezing the "encoder" (ego) here
             tx = optax.chain(
                 optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
                 optax.adamw(learning_rate=lr, eps=config['EPS_ADAM'], weight_decay=config['WEIGHT_DECAY_ADAM']),
