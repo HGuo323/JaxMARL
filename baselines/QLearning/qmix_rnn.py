@@ -122,17 +122,21 @@ class HyperRNNQNetwork(nn.Module):
 
     @nn.compact
     def __call__(self, hidden, obs, dones):
-        # print("obs", obs)
-        # jax.debug.print("marl obs {}", obs)
         time_steps, batch_size, obs_dim = obs.shape
+
         # NOTE: hardcoded to match size of SARL pi
         # TODO: this is inaccurate as this only gives the first landmark in list of N landmarks, couldn't figure out how to resolve it
-        ego_obs = obs[:, :, :6] 
+        # ego_obs = obs[:, :, :6] 
+
+        # transform input obs to embedding the right size for single-agent frozen portion
+        # TODO: try concat hidden and obs as input to hyper
+        ego_obs = self.hyper_forward(obs_dim, 6, obs, obs, time_steps, batch_size)
 
         embedding = jax.lax.stop_gradient(nn.Dense(
             self.hidden_dim,
             kernel_init=orthogonal(self.init_scale),
             bias_init=constant(0.0),
+            name="Dense_0",
         )(ego_obs))
         embedding = jax.lax.stop_gradient(nn.relu(embedding))
 
@@ -140,18 +144,19 @@ class HyperRNNQNetwork(nn.Module):
         hidden, embedding = jax.lax.stop_gradient(ScannedRNN()(hidden, rnn_in))
 
         # NOTE: hyper decoder layer (replace OG below)
-        q_vals = self.hyper_forward(self.hidden_dim, self.action_dim, embedding, obs, time_steps, batch_size)
+        # q_vals = self.hyper_forward(self.hidden_dim, self.action_dim, embedding, obs, time_steps, batch_size)
 
         # NOTE: hyper adapter layer (works with OG below)
         # embedding = self.hyper_forward(self.hidden_dim, self.hidden_dim, embedding, obs, time_steps, batch_size)
 
         # NOTE: ORIGINAL DECODER LAYER
         # ----------------------
-        # q_vals = nn.Dense(
-        #     self.action_dim,
-        #     kernel_init=orthogonal(self.init_scale),
-        #     bias_init=constant(0.0),
-        # )(embedding)
+        q_vals = jax.lax.stop_gradient(nn.Dense(
+            self.action_dim,
+            kernel_init=orthogonal(self.init_scale),
+            bias_init=constant(0.0),
+            name="Dense_1",
+        )(embedding))
         # ----------------------
 
         return hidden, q_vals
@@ -382,16 +387,15 @@ def make_train(config, env):
                     config["HIDDEN_SIZE"], 1
                 )  # (batch_size, hidden_dim)
                 agent_params = network.init(rng, init_hs, *init_x)
+                print(list(agent_params['params'].keys()))
 
                 # overwrite the non-hypernetwork parts of the agent net
                 for key in saved_agent_params['params'].keys():
-                    if key in agent_params:
-                        print(key)
+                    print(key)
+                    if key in agent_params['params']:
                         print('init', agent_params['params'][key])
                         agent_params['params'][key] = saved_agent_params['params'][key]
                         print('overwrite', agent_params['params'][key])
-
-                print(agent_params['params'])
 
             # init mixer
             rng, _rng = jax.random.split(rng)
