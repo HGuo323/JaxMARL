@@ -7,12 +7,11 @@
 "HIDDEN_SIZE": 64
 "AGENT_INIT_SCALE": 2.0
 
-# NOTE: only used if load_path in config.yaml is set
-"AGENT_HYPERNET_KWARGS":
-  "HIDDEN_DIM": 32
-  "INIT_SCALE": 0.2
-  "NUM_LAYERS": 2
-  "USE_LAYER_NORM": True
+# "AGENT_HYPERNET_KWARGS":
+#   "HIDDEN_DIM": 32
+#   "INIT_SCALE": 0.2
+#   "NUM_LAYERS": 2
+#   "USE_LAYER_NORM": True
 
 "EPS_START": 1.0
 "EPS_FINISH": 0.05

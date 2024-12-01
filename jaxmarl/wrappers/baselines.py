@@ -248,9 +248,16 @@ class CTRolloutManager(JaxMARLWrapper):
         # assumes the observations are flattened vectors
         self.max_obs_length = max(list(map(lambda x: get_space_dim(x), self.observation_spaces.values())))
         self.max_action_space = max(list(map(lambda x: get_space_dim(x), self.action_spaces.values())))
-        self.obs_size = self.max_obs_length
-        if self.preprocess_obs:
-            self.obs_size += len(self.agents)
+        # self.obs_size = self.max_obs_length
+        # if self.preprocess_obs:
+        #     self.obs_size += len(self.agents)
+        # NOTE: this is hardcoded for my version of MPESimpleSpread bc I'm lazy
+        self.obs_size = (
+                        2   # ego_vel
+                        + 2 # ego_pos
+                        + len(self.training_agents)*2  # landmark_pos
+                        + (len(self.training_agents)-1)*2 # other_pos
+                        )
 
         # agents ids
         self.agents_one_hot = {a:oh for a, oh in zip(self.agents, jnp.eye(len(self.agents)))}

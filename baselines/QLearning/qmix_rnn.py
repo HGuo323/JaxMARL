@@ -126,7 +126,7 @@ class HyperRNNQNetwork(nn.Module):
         time_steps, batch_size, obs_dim = obs.shape
 
         # NOTE: hardcoded to match size of SARL pi
-        # TODO: this is inaccurate as this only gives the first landmark in list of N landmarks, couldn't figure out how to resolve it
+        # NOTE: this is inaccurate as this only gives the first landmark in list of N landmarks, couldn't figure out how to resolve it
         # ego_obs = obs[:, :, :6] 
 
         # transform input obs to embedding the right size for single-agent frozen portion
@@ -365,8 +365,7 @@ def make_train(config, env):
             if saved_agent_params is None:
                 init_x = (
                     jnp.zeros(
-                        # TODO: why is the obs size 30 here for 5 agents when printing the obs gives 22?????
-                        (1, 1, 22) # wrapped_env.obs_size)
+                        (1, 1, wrapped_env.obs_size)
                     ),  # (time_step, batch_size, obs_size)
                     jnp.zeros((1, 1)),  # (time_step, batch size)
                 )
@@ -379,8 +378,7 @@ def make_train(config, env):
                 # if there are agent params to load, must modify input size of agent net slightly
                 init_x = (
                     jnp.zeros(
-                        # TODO: why is the obs size 30 here for 5 agents when printing the obs gives 22?????
-                        (1, 1, 22) # wrapped_env.obs_size)
+                        (1, 1, wrapped_env.obs_size)
                     ),  # (time_step, batch_size, obs_size)
                     jnp.zeros((1, 1)),  # (time_step, batch size)
                 )
@@ -427,13 +425,21 @@ def make_train(config, env):
                     # optax.adam(learning_rate=lr, eps=config['EPS_ADAM']),
                 )
             else:
+                # add separate LR for pretrained RNN 
+                rnn_lr_scheduler = optax.linear_schedule(
+                    init_value=config["RNN_LR"],
+                    end_value=1e-10,
+                    transition_steps=(config["NUM_EPOCHS"]) * config["NUM_UPDATES"],
+                )
+
+                rnn_lr = rnn_lr_scheduler if config.get("LR_LINEAR_DECAY", False) else config["RNN_LR"]
+
                 param_labels_pytree = {"agent": {"params": {"ScannedRNN_0": "rnn", "Dense_0": "other", "Dense_1": "other"}}, "mixer": "other"}
                 tx = optax.chain(
                     optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
                     optax.multi_transform(
                         {
-                            # train RNN with small flat LR (never linear decay)
-                            "rnn": optax.adamw(learning_rate=config['RNN_LR'], eps=config['EPS_ADAM'], weight_decay=config['WEIGHT_DECAY_ADAM']),
+                            "rnn": optax.adamw(learning_rate=rnn_lr, eps=config['EPS_ADAM'], weight_decay=config['WEIGHT_DECAY_ADAM']),
                             "other": optax.adamw(learning_rate=lr, eps=config['EPS_ADAM'], weight_decay=config['WEIGHT_DECAY_ADAM']),
                         },
                         param_labels=param_labels_pytree,
