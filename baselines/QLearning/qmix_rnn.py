@@ -11,6 +11,7 @@ import optax
 import flax.linen as nn
 from flax.linen.initializers import constant, orthogonal
 from flax.training.train_state import TrainState
+from flax.core.frozen_dict import freeze, unfreeze
 from gymnax.wrappers.purerl import LogWrapper
 import hydra
 from omegaconf import OmegaConf
@@ -129,19 +130,19 @@ class HyperRNNQNetwork(nn.Module):
         # ego_obs = obs[:, :, :6] 
 
         # transform input obs to embedding the right size for single-agent frozen portion
-        # TODO: try concat hidden and obs as input to hyper
-        ego_obs = self.hyper_forward(obs_dim, 6, obs, obs, time_steps, batch_size)
+        # obs_hidden = jnp.concatenate([obs.squeeze(), hidden.squeeze()])
+        # ego_obs = self.hyper_forward(obs_dim, 6, obs, obs_hidden, time_steps, batch_size)
 
-        embedding = jax.lax.stop_gradient(nn.Dense(
+        embedding = nn.Dense(
             self.hidden_dim,
             kernel_init=orthogonal(self.init_scale),
             bias_init=constant(0.0),
             name="Dense_0",
-        )(ego_obs))
-        embedding = jax.lax.stop_gradient(nn.relu(embedding))
+        )(obs)
+        embedding = nn.relu(embedding)
 
         rnn_in = (embedding, dones)
-        hidden, embedding = jax.lax.stop_gradient(ScannedRNN()(hidden, rnn_in))
+        hidden, embedding = ScannedRNN()(hidden, rnn_in)
 
         # NOTE: hyper decoder layer (replace OG below)
         # q_vals = self.hyper_forward(self.hidden_dim, self.action_dim, embedding, obs, time_steps, batch_size)
@@ -151,12 +152,12 @@ class HyperRNNQNetwork(nn.Module):
 
         # NOTE: ORIGINAL DECODER LAYER
         # ----------------------
-        q_vals = jax.lax.stop_gradient(nn.Dense(
+        q_vals = nn.Dense(
             self.action_dim,
             kernel_init=orthogonal(self.init_scale),
             bias_init=constant(0.0),
             name="Dense_1",
-        )(embedding))
+        )(embedding)
         # ----------------------
 
         return hidden, q_vals
@@ -339,20 +340,20 @@ def make_train(config, env):
         )  # remove the NUM_ENV dim
 
         # INIT NETWORK AND OPTIMIZER
-        if saved_agent_params is None:
-            network = RNNQNetwork(
-                action_dim=wrapped_env.max_action_space,
-                hidden_dim=config["HIDDEN_SIZE"],
-                init_scale=config["AGENT_INIT_SCALE"],
-            )
-        else:
-            # assume if given params, then use hypernet
-            network = HyperRNNQNetwork(
-                action_dim=wrapped_env.max_action_space,
-                hidden_dim=config["HIDDEN_SIZE"],
-                init_scale=config["AGENT_INIT_SCALE"],
-                hypernet_kwargs=config["AGENT_HYPERNET_KWARGS"],
-            )
+        # if saved_agent_params is None:
+        network = RNNQNetwork(
+            action_dim=wrapped_env.max_action_space,
+            hidden_dim=config["HIDDEN_SIZE"],
+            init_scale=config["AGENT_INIT_SCALE"],
+        )
+        # else:
+        #     # assume if given params, then use hypernet
+        #     network = HyperRNNQNetwork(
+        #         action_dim=wrapped_env.max_action_space,
+        #         hidden_dim=config["HIDDEN_SIZE"],
+        #         init_scale=config["AGENT_INIT_SCALE"],
+        #         hypernet_kwargs=config["AGENT_HYPERNET_KWARGS"],
+        #     )
 
         mixer = MixingNetwork(
             config["MIXER_EMBEDDING_DIM"],
@@ -390,12 +391,15 @@ def make_train(config, env):
                 print(list(agent_params['params'].keys()))
 
                 # overwrite the non-hypernetwork parts of the agent net
-                for key in saved_agent_params['params'].keys():
-                    print(key)
-                    if key in agent_params['params']:
-                        print('init', agent_params['params'][key])
-                        agent_params['params'][key] = saved_agent_params['params'][key]
-                        print('overwrite', agent_params['params'][key])
+                # for key in saved_agent_params['params'].keys():
+                #     print(key)
+                #     if key in agent_params['params']:
+                #         print('init', agent_params['params'][key])
+                #         agent_params['params'][key] = saved_agent_params['params'][key]
+                #         print('overwrite', agent_params['params'][key])
+
+                # only load pretrained RNN, let other parts vary
+                agent_params['params']['ScannedRNN_0'] = saved_agent_params['params']['ScannedRNN_0']
 
             # init mixer
             rng, _rng = jax.random.split(rng)
@@ -416,11 +420,27 @@ def make_train(config, env):
 
             lr = lr_scheduler if config.get("LR_LINEAR_DECAY", False) else config["LR"]
 
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adamw(learning_rate=lr, eps=config['EPS_ADAM'], weight_decay=config['WEIGHT_DECAY_ADAM']),
-                # optax.adam(learning_rate=lr, eps=config['EPS_ADAM']),
-            )
+            if saved_agent_params is None:
+                tx = optax.chain(
+                    optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+                    optax.adamw(learning_rate=lr, eps=config['EPS_ADAM'], weight_decay=config['WEIGHT_DECAY_ADAM']),
+                    # optax.adam(learning_rate=lr, eps=config['EPS_ADAM']),
+                )
+            else:
+                param_labels_pytree = {"agent": {"params": {"ScannedRNN_0": "rnn", "Dense_0": "other", "Dense_1": "other"}}, "mixer": "other"}
+                tx = optax.chain(
+                    optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+                    optax.multi_transform(
+                        {
+                            # train RNN with small flat LR (never linear decay)
+                            "rnn": optax.adamw(learning_rate=config['RNN_LR'], eps=config['EPS_ADAM'], weight_decay=config['WEIGHT_DECAY_ADAM']),
+                            "other": optax.adamw(learning_rate=lr, eps=config['EPS_ADAM'], weight_decay=config['WEIGHT_DECAY_ADAM']),
+                        },
+                        param_labels=param_labels_pytree,
+                    ),
+                    # optax.adamw(learning_rate=lr, eps=config['EPS_ADAM'], weight_decay=config['WEIGHT_DECAY_ADAM']),
+                    # optax.adam(learning_rate=lr, eps=config['EPS_ADAM']),
+                )
 
             train_state = CustomTrainState.create(
                 apply_fn=network.apply,
