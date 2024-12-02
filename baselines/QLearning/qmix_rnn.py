@@ -433,6 +433,9 @@ def make_train(config, env):
                 )
 
                 rnn_lr = rnn_lr_scheduler if config.get("LR_LINEAR_DECAY", False) else config["RNN_LR"]
+                # treat LR=0 as freezing the RNN (override linear decay)
+                if config["RNN_LR"] == 0:
+                    rnn_lr = 0
 
                 param_labels_pytree = {"agent": {"params": {"ScannedRNN_0": "rnn", "Dense_0": "other", "Dense_1": "other"}}, "mixer": "other"}
                 tx = optax.chain(

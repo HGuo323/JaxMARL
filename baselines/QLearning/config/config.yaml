@@ -1,6 +1,6 @@
 # experiment params
-"NUM_SEEDS": 5 # number of vmapped seeds
-"SEED": 0
+"NUM_SEEDS": 10 # number of vmapped seeds
+"SEED": 3 # RNG'd between 0-100 via random.org
 
 "HYP_TUNE": False # perform hyp tune
 
@@ -12,6 +12,6 @@
 
 # where to save the params (if None, will not save)
 "SAVE_PATH": "models"
-"LOAD_PATH": "models/one-agent-one-landmark" # if None, will not load
+"LOAD_PATH": "models/final-one-agent-one-landmark" # if None, will not load
 # "LOAD_PATH": null
 
