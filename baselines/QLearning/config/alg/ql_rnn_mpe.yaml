@@ -24,7 +24,7 @@
 "TAU": 1.
 "NUM_EPOCHS": 1 
 "LR": 0.005
-"RNN_LR": 0.0 # 5e-4
+"RNN_LR": 1e-4
 "LEARNING_STARTS": 10000 # timesteps
 "LR_LINEAR_DECAY": True
 "EPS_ADAM": 0.001
